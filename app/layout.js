@@ -17,6 +17,9 @@ const merriweather = Merriweather({
 export const metadata = {
   title: "Optex - Read Anything.",
   description: "Advanced OCR and text correction using AI.",
+  verification: {
+    google: "Q4TDzE3G5_scwK2g96A50ooFKe2T1soFPCZP77_2Ja0",
+  },
 };
 
 export default function RootLayout({ children }) {
