@@ -4,10 +4,131 @@ import { useState, useRef, useEffect } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { UploadCloud, FileText, Image as ImageIcon, Copy, Check, Loader2, Sparkles, PenTool, X } from "lucide-react";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { supabaseClient } from "@/lib/supabase";
+
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns today's date as YYYY-MM-DD in the user's LOCAL timezone.
+ * Never use toISOString() for this — it returns UTC and will be off
+ * by up to ±14 hours depending on the user's timezone.
+ */
+function localDateString() {
+  const d = new Date();
+  const year  = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day   = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Returns the number of milliseconds from right now until the next
+ * local midnight (00:00:00.000).
+ */
+function msUntilMidnight() {
+  const now  = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return next - now;
+}
+
+// ---------------------------------------------------------------------------
+// Supabase helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Load this user's usage row from Supabase.
+ * - If last_reset < today  → reset all counts to 0 and upsert.
+ * - Overwrites localStorage so counts are consistent across devices.
+ */
+async function loadUsageFromSupabase(userId, setUsages) {
+  if (!supabaseClient || !userId) return;
+  try {
+    const { data, error } = await supabaseClient
+      .from("optex_usage")
+      .select("free_used, handwritten_used, premium_used, last_reset")
+      .eq("user_id", userId)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      // PGRST116 = row not found (first-time user) — not a real error
+      console.error("[Supabase] loadUsageFromSupabase error:", error);
+      return;
+    }
+
+    const today = localDateString();
+
+    if (!data) {
+      // First-time user — row doesn't exist yet, nothing to load
+      console.log("[Supabase] No existing usage row — will create on first use.");
+      return;
+    }
+
+    let remote = {
+      free: data.free_used,
+      handwritten: data.handwritten_used,
+      premium: data.premium_used,
+    };
+
+    if (data.last_reset !== today) {
+      // Stale day — reset counts
+      remote = { free: 0, handwritten: 0, premium: 0 };
+      const { error: upsertError } = await supabaseClient
+        .from("optex_usage")
+        .upsert({
+          user_id: userId,
+          free_used: 0,
+          handwritten_used: 0,
+          premium_used: 0,
+          last_reset: today,
+          updated_at: new Date().toISOString(),
+        });
+      if (upsertError) console.error("[Supabase] reset upsert error:", upsertError);
+    }
+
+    // Overwrite localStorage with the authoritative remote values
+    localStorage.setItem("usages", JSON.stringify(remote));
+    setUsages(remote);
+    console.log("[Supabase] Loaded usage from DB:", remote);
+  } catch (err) {
+    console.error("[Supabase] loadUsageFromSupabase threw:", err);
+  }
+}
+
+/**
+ * Upsert the user's current usage counts to Supabase.
+ * Called as fire-and-forget after every successful OCR action.
+ */
+async function syncUsageToSupabase(userId, usages) {
+  if (!supabaseClient || !userId) return;
+  try {
+    const today = localDateString();
+    const { error } = await supabaseClient
+      .from("optex_usage")
+      .upsert({
+        user_id: userId,
+        free_used: usages.free,
+        handwritten_used: usages.handwritten,
+        premium_used: usages.premium,
+        last_reset: today,
+        updated_at: new Date().toISOString(),
+      });
+    if (error) console.error("[Supabase] syncUsageToSupabase error:", error);
+  } catch (err) {
+    console.error("[Supabase] syncUsageToSupabase threw:", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard Component
+// ---------------------------------------------------------------------------
 
 export default function Dashboard() {
+  const { isLoaded: clerkLoaded, userId } = useAuth();
+
   const [mode, setMode] = useState("free"); // "free", "handwritten", "premium"
   const [image, setImage] = useState(null);
   const [file, setFile] = useState(null);
@@ -52,10 +173,36 @@ export default function Dashboard() {
     }
   };
 
-  // Load usages from server
+  // Load local data first, then hydrate from Supabase once Clerk confirms identity
   useEffect(() => {
+    if (!clerkLoaded) return;
     loadLocalData();
-  }, []);
+    if (userId) {
+      loadUsageFromSupabase(userId, setUsages);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clerkLoaded, userId]);
+
+  // Midnight reset — fires when the clock ticks past 00:00 local time.
+  // Re-arms itself every day so the page never needs a refresh.
+  useEffect(() => {
+    if (!userId) return;
+
+    const resetAtMidnight = () => {
+      const zeroed = { free: 0, handwritten: 0, premium: 0 };
+      localStorage.setItem("usages", JSON.stringify(zeroed));
+      setUsages(zeroed);
+      console.log("[Supabase] Midnight reset — counts zeroed.");
+      syncUsageToSupabase(userId, zeroed);
+
+      // Re-arm for the next midnight
+      const nextTimer = setTimeout(resetAtMidnight, msUntilMidnight());
+      return nextTimer;
+    };
+
+    const timer = setTimeout(resetAtMidnight, msUntilMidnight());
+    return () => clearTimeout(timer);
+  }, [userId]);
   
   const fileInputRef = useRef(null);
 
@@ -144,10 +291,11 @@ export default function Dashboard() {
       const data = await response.json();
       setResult(data.text || "No text extracted.");
       
-      // Increment usage locally
+      // Increment usage locally then sync to Supabase (fire-and-forget)
       setUsages(prev => {
         const newUsages = { ...prev, [mode]: prev[mode] + 1 };
         localStorage.setItem("usages", JSON.stringify(newUsages));
+        syncUsageToSupabase(userId, newUsages);
         return newUsages;
       });
       
