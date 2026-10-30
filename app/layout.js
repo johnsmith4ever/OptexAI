@@ -1,6 +1,4 @@
 import { Inter, Merriweather } from "next/font/google";
-import { ClerkProvider } from '@clerk/nextjs'
-import { ThemeProvider } from "./theme-provider";
 import "./globals.css";
 
 const inter = Inter({
@@ -16,7 +14,15 @@ const merriweather = Merriweather({
 
 export const metadata = {
   title: "Optex - Read Anything.",
-  description: "Advanced OCR and text correction using AI.",
+  description: "Advanced OCR and text digitization using AI.",
+  icons: {
+    icon: [
+      { url: "/icon.png", type: "image/png" },
+      { url: "/favicon.ico" }
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/icon.png",
+  },
   verification: {
     google: "Q4TDzE3G5_scwK2g96A50ooFKe2T1soFPCZP77_2Ja0",
   },
@@ -24,14 +30,10 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <ClerkProvider>
-      <html lang="en" suppressHydrationWarning className={`${inter.variable} ${merriweather.variable}`}>
-        <body>
-          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
-            {children}
-          </ThemeProvider>
-        </body>
-      </html>
-    </ClerkProvider>
+    <html lang="en" className={`dark ${inter.variable} ${merriweather.variable}`}>
+      <body>
+        {children}
+      </body>
+    </html>
   );
 }

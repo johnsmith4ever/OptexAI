@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createWorker } from "tesseract.js";
-import { auth } from "@clerk/nextjs/server";
 
 export async function POST(req) {
   try {
@@ -9,11 +8,6 @@ export async function POST(req) {
     
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
-    }
-
-    const { userId } = await auth();
-    if (!userId) {
-       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Convert file to base64 for OCR.space
